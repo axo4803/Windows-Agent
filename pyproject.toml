@@ -31,4 +31,4 @@ dev = ["pytest"]
 screen-use-mcp = "screen_use.mcp_server:main"
 
 [tool.setuptools.packages.find]
-include = ["screen_use*"]
+include = ["screen_use*", "windows_agent*"]

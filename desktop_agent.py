@@ -7,7 +7,7 @@ only, or --strict-approval to require manual confirmation on every write/confirm
 Stop: Ctrl+C, Ctrl+Alt+F12, or create the configured stop file.
 """
 import argparse
-import wifi_info
+from windows_agent.tools import network as wifi_info
 import ctypes
 from html.parser import HTMLParser
 import json
@@ -21,15 +21,14 @@ import sys
 import threading
 import time
 import traceback
-import system_profile
-import agent_context
-import file_actions
-import storage_info
-import app_catalog
-import terminal_tools
-import terminal_input
-import agent_runtime
-import wallpaper_tools
+from windows_agent.tools import system as system_profile
+from windows_agent import context as agent_context
+from windows_agent.tools import files as file_actions
+from windows_agent.tools import applications as app_catalog
+from windows_agent.tools import diagnostics as terminal_tools
+from windows_agent import terminal as terminal_input
+from windows_agent import runtime as agent_runtime
+from windows_agent.tools import wallpaper as wallpaper_tools
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote_plus, urlparse
 from urllib.request import Request, urlopen
@@ -1328,13 +1327,13 @@ class DesktopAgent:
         return system_profile.read_section(section)
 
     def inspect_images(self, path, recursive=False):
-        return agent_context.inspect_images(path, self.check, recursive=recursive)
+        return file_actions.inspect_images(path, self.check, recursive=recursive)
 
     def search_files(self, path, pattern="*"):
-        return agent_context.search_files(path, pattern, self.check)
+        return file_actions.search_files(path, pattern, self.check)
 
     def inspect_storage(self):
-        result = storage_info.inspect(self.check)
+        result = system_profile.inspect_storage(self.check)
         if not result.get('errors'):
             try:
                 profile = system_profile.load(system_profile.PROFILE)

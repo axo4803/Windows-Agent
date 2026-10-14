@@ -1,7 +1,7 @@
 """Read current Wi-Fi connections; never infer SSIDs from adapter names."""
 import time
 
-import terminal_tools
+from . import diagnostics as terminal_tools
 
 
 def parse_interfaces(output):

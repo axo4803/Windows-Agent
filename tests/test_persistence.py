@@ -5,7 +5,7 @@ import threading
 import pytest
 from ollama import ChatResponse
 
-import agent_runtime
+from windows_agent import runtime as agent_runtime
 import desktop_agent
 
 

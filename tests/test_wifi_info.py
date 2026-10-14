@@ -2,9 +2,9 @@ from types import SimpleNamespace
 
 import pytest
 
-import agent_runtime
+from windows_agent import runtime as agent_runtime
 import desktop_agent
-import wifi_info
+from windows_agent.tools import network as wifi_info
 
 
 def test_ssid_is_separate_from_adapter_name_and_bssid():

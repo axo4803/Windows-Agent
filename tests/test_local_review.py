@@ -3,7 +3,7 @@ from unittest.mock import Mock
 
 import pytest
 
-import agent_runtime
+from windows_agent import runtime as agent_runtime
 
 
 @pytest.mark.parametrize("payload", [

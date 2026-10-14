@@ -73,10 +73,12 @@ Model requests go to the local Ollama server. Online documentation searches use 
 | Path | Purpose |
 | --- | --- |
 | `desktop_agent.py` | Main terminal assistant and desktop tools |
-| `agent_runtime.py`, `agent_context.py` | Task runtime and conversation context |
-| `app_catalog.py` | Windows application discovery |
-| `file_actions.py`, `wallpaper_tools.py`, `terminal_tools.py` | File, wallpaper, and diagnostic tools |
-| `system_profile.py`, `storage_info.py` | Local system information |
+| `windows_agent/runtime.py`, `windows_agent/context.py` | Task runtime and conversation context |
+| `windows_agent/terminal.py` | Interactive terminal input |
+| `windows_agent/tools/applications.py` | Windows application discovery |
+| `windows_agent/tools/files.py` | File actions, search, and image operations |
+| `windows_agent/tools/network.py`, `windows_agent/tools/system.py` | Wi-Fi lookup, hardware/storage inventory, and saved profiles |
+| `windows_agent/tools/wallpaper.py`, `windows_agent/tools/diagnostics.py` | Wallpaper and diagnostic tools |
 | `screen_use/` | Inherited desktop automation SDK and MCP server |
 | `agent.py` | Earlier Calculator-only agent |
 | `tests/` | Automated tests |

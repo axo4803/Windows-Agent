@@ -3,6 +3,12 @@
 The main entry point is `desktop_agent.py`. It uses a local Ollama server at
 `http://127.0.0.1:11434` and defaults to `qwen3.5:4b`.
 
+Supporting modules are organized under `windows_agent/`: runtime, conversation
+context, and terminal input live at the package level, while `tools/` groups
+applications, files/images, network, system/storage, diagnostics, and wallpaper.
+The launch command, project-level `memory/` and `logs/` directories, and stop-file
+location are unchanged.
+
 ## Setup and launch
 
 From the project folder in PowerShell:

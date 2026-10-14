@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, Mock
 from PIL import Image
 import pytest
 
-import agent_context
-import agent_runtime
+from windows_agent import context as agent_context
+from windows_agent import runtime as agent_runtime
 import desktop_agent
-import file_actions
-import terminal_tools
+from windows_agent.tools import files as file_actions
+from windows_agent.tools import diagnostics as terminal_tools
 
 
 @pytest.fixture(autouse=True)
@@ -130,7 +130,7 @@ def test_search_files_and_offset_read(tmp_path):
     txt = tmp_path / "large.txt"
     txt.write_text("A" * 70000 + "TAIL", encoding="utf-8")
 
-    found = agent_context.search_files(str(tmp_path), "guilin", lambda: None)
+    found = file_actions.search_files(str(tmp_path), "guilin", lambda: None)
     assert len(found["matches"]) == 1
     assert found["matches"][0]["name"] == "Guilin_River.png"
 
