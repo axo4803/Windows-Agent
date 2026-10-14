@@ -1,0 +1,13 @@
+pyautogui
+uiautomation
+mss
+mcp[cli]
+python-dotenv
+pydantic
+pydantic-settings
+openai
+ollama
+pillow
+pytest
+pyperclip
+prompt_toolkit>=3.0,<4
