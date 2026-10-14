@@ -1,7 +1,7 @@
 pyautogui
 uiautomation
 mss
-mcp[cli]
+mcp[cli]>=2.3,<3
 python-dotenv
 pydantic
 pydantic-settings

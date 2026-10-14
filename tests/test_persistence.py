@@ -120,6 +120,17 @@ def test_emergency_stop_prevents_model_and_tools(harness):
     assert agent.stop.is_set()
 
 
+def test_visual_capture_goes_to_local_model_without_image_in_logs(harness):
+    agent, client, record, show = harness
+    agent.inspect_screen_visual = Mock(return_value={'image_base64': 'aW1hZ2U=', 'width': 100, 'height': 100})
+    client.chat.side_effect = [tool('inspect_screen_visual'), reply('Observed Example'), reply('Observed Example')]
+    agent.run('Inspect the screen')
+    messages = client.chat.call_args_list[1].kwargs['messages']
+    assert any(message.get('images') == ['aW1hZ2U='] for message in messages)
+    results = [call.kwargs['result'] for call in agent.log_event.call_args_list if call.args[0] == 'tool_result']
+    assert all('image_base64' not in result for result in results)
+
+
 @pytest.mark.parametrize("result, expected", [
     ({"ok": False}, "error"), ({"errors": ["No device"]}, "error"),
     ({"verified": False}, "unverified"), ({"denied": True}, "denied"),

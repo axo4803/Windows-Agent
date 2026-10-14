@@ -75,10 +75,12 @@ Model requests go to the local Ollama server. Online documentation searches use 
 | `desktop_agent.py` | Main terminal assistant and desktop tools |
 | `windows_agent/runtime.py`, `windows_agent/context.py` | Task runtime and conversation context |
 | `windows_agent/terminal.py` | Interactive terminal input |
+| `windows_agent/powershell.py` | Lazy, cancellable PowerShell inspection process |
 | `windows_agent/tools/applications.py` | Windows application discovery |
 | `windows_agent/tools/files.py` | File actions, search, and image operations |
 | `windows_agent/tools/network.py`, `windows_agent/tools/system.py` | Wi-Fi lookup, hardware/storage inventory, and saved profiles |
 | `windows_agent/tools/wallpaper.py`, `windows_agent/tools/diagnostics.py` | Wallpaper and diagnostic tools |
+| `windows_agent/tools/visual.py` | Annotated screenshots for the local model |
 | `screen_use/` | Inherited desktop automation SDK and MCP server |
 | `agent.py` | Earlier Calculator-only agent |
 | `tests/` | Automated tests |
@@ -86,6 +88,16 @@ Model requests go to the local Ollama server. Online documentation searches use 
 [Desktop Agent Guide](Desktop%20Agent%20Guide.md) contains additional details and historical implementation notes.
 
 ## SDK and MCP server
+
+Windows-Agent now has a separate **read-only MCP server** for Wi-Fi, hardware,
+file, application, and UI inspection. It uses the existing tools without running
+a model or the terminal agent loop:
+
+```powershell
+.\.venv\Scripts\python.exe -m windows_agent.mcp_server
+```
+
+See [MCP setup](docs/MCP.md) for the tool list and host connection examples.
 
 The inherited `screen_use` package remains available independently of the terminal assistant:
 

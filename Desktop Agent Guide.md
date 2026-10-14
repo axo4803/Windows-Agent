@@ -71,6 +71,35 @@ not neural upscaling. Original images are retained.
 
 ## Hardware, diagnostics, and limits
 
+Tool schemas are selected by task and recent conversation context by default;
+failures unlock all tools permitted by the current mode. `--no-dynamic-routing`
+disables selection. `inspect_wifi` remains available in the initial tool set.
+
+Known file pipelines and other deterministic sequences can use `batch_actions`
+with 1 to 8 steps. The wrapper and each attempted step consume the same tool-call
+budget. Steps share direct calls' approval, denial, and retry checks, and stop at
+the first error. A completed batch is not proof that the full task is complete.
+
+`--fast-review` is optional and skips the second model review only for a single
+explicitly verified inspection with no detected multi-part request. It does not
+skip review for unverified returns or write pipelines.
+
+Application activation and ordinary clicks return a fresh controls preview when
+inspection succeeds. `inspect_screen_visual` can supply an annotated screenshot
+to the local Ollama model for custom controls; it does not create clickable IDs,
+enable coordinate actions, or invoke a cloud vision provider. Raw screenshot
+bytes are omitted from the local task log and saved conversation history.
+
+GPU queries prefer direct NVML calls with the existing diagnostics fallback.
+Fixed application/storage/inventory scripts can reuse a lazy PowerShell process.
+Each query still checks cancellation and a deadline; values are queried afresh.
+The process closes when the server or terminal assistant exits.
+
+Bounded experience records live in `memory/windows-agent-trajectories.json`
+(`SCREEN_USE_HOME` can override the storage directory). Only explicitly verified
+tool histories are recalled as untrusted hints. They do not grant permission or
+establish completion. `/forget-memory` also clears these records.
+
 Use `inspect_wifi` for the current connected Wi-Fi network name (SSID). The saved
 network inventory's `Name` field identifies an adapter, not the SSID. The live
 tool uses `netsh wlan show interfaces`; restricted access or unsupported output

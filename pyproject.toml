@@ -13,7 +13,7 @@ dependencies = [
     "pyautogui",
     "uiautomation",
     "mss",
-    "mcp[cli]",
+    "mcp[cli]>=2.3,<3",
     "python-dotenv",
     "pydantic",
     "pydantic-settings",
@@ -29,6 +29,10 @@ dev = ["pytest"]
 
 [project.scripts]
 screen-use-mcp = "screen_use.mcp_server:main"
+windows-agent-mcp = "windows_agent.mcp_server:main"
+
+[tool.setuptools]
+py-modules = ["desktop_agent"]
 
 [tool.setuptools.packages.find]
 include = ["screen_use*", "windows_agent*"]

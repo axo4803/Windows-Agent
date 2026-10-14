@@ -1,11 +1,14 @@
 """Bounded, local system inventory and explicitly supplied user memory."""
 import json
+import ctypes
 import os
 import re
 from pathlib import Path
 import subprocess
 import time
 from .. import PROJECT_ROOT
+from ..powershell import PS_DAEMON
+from .. import runtime
 
 ROOT = PROJECT_ROOT / 'memory'
 PROFILE = ROOT / 'system-profile.json'
@@ -48,30 +51,38 @@ def save(path, data):
 def refresh(agent):
     agent.check()
     hardware = agent.inspect_system()
-    executable = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
-    script = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' + INVENTORY
-    creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
-    process = subprocess.Popen([str(executable), '-NoProfile', '-NonInteractive', '-Command', script],
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
-                               creationflags=creationflags)
-    deadline = time.monotonic() + 30
-    try:
-        while True:
-            agent.check()
-            if time.monotonic() >= deadline:
-                raise TimeoutError('System inventory took longer than 30 seconds')
-            try:
-                output, error = process.communicate(timeout=0.1)
-                break
-            except subprocess.TimeoutExpired:
-                continue
-        if process.returncode:
-            raise RuntimeError(error.strip()[:500])
-        data = json.loads(output)
-    finally:
-        if process.poll() is None:
-            process.kill()
-            process.communicate()
+    data = None
+    warm_out = PS_DAEMON.run_script(INVENTORY, check=agent.check, timeout=25.0)
+    if warm_out:
+        try:
+            data = json.loads(warm_out.lstrip('\ufeff'))
+        except Exception:
+            data = None
+    if data is None:
+        executable = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
+        script = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; ' + INVENTORY
+        creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+        process = subprocess.Popen([str(executable), '-NoProfile', '-NonInteractive', '-Command', script],
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
+                                   creationflags=creationflags)
+        deadline = time.monotonic() + 30
+        try:
+            while True:
+                agent.check()
+                if time.monotonic() >= deadline:
+                    raise TimeoutError('System inventory took longer than 30 seconds')
+                try:
+                    output, error = process.communicate(timeout=0.1)
+                    break
+                except subprocess.TimeoutExpired:
+                    continue
+            if process.returncode:
+                raise RuntimeError(error.strip()[:500])
+            data = json.loads(output)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.communicate()
     hardware['cpu_details'] = data.pop('cpu', [])
     hardware['memory_modules'] = data.pop('memory_modules', [])
     data['hardware'] = hardware
@@ -118,7 +129,8 @@ def context(task):
     relevant.sort(key=lambda m: len(words.intersection(re.findall(r'\w{3,}', m.get('fact', '').lower()))), reverse=True)
     return json.dumps({'snapshot': json.dumps(selected, ensure_ascii=False)[:3200],
                        'user_notes': [str(n)[:500] for n in load(NOTES).get('notes', [])[-4:]],
-                       'agent_memories': relevant[:5]}, ensure_ascii=False)
+                       'agent_memories': relevant[:5],
+                       'experience_replay_hints': runtime.recall_task_trajectories(task)}, ensure_ascii=False)
 
 def remember_fact(fact, category, source):
     fact = fact.strip()
@@ -202,6 +214,14 @@ try {
 
 def inspect_storage(check):
     check()
+    warm_out = PS_DAEMON.run_script(STORAGE_SCRIPT, check=check, timeout=20.0)
+    if warm_out:
+        try:
+            result = json.loads(warm_out.lstrip('\ufeff'))
+            result['captured_at'] = time.strftime('%Y-%m-%dT%H:%M:%S%z')
+            return result
+        except (ValueError, TypeError):
+            pass
     executable = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32/WindowsPowerShell/v1.0/powershell.exe'
     creationflags = getattr(subprocess, 'CREATE_NO_WINDOW', 0)
     process = subprocess.Popen([str(executable), '-NoProfile', '-NonInteractive', '-Command', STORAGE_SCRIPT],
@@ -227,3 +247,107 @@ def inspect_storage(check):
         if process.poll() is None:
             process.kill()
             process.communicate()
+
+
+def query_nvml_gpus():
+    """Query NVIDIA GPUs directly in-process via nvml.dll ctypes without spawning a subprocess."""
+    if os.name != 'nt':
+        return []
+    candidates = [
+        Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'nvml.dll',
+        Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'NVIDIA Corporation' / 'NVSMI' / 'nvml.dll',
+    ]
+    dll_path = next((p for p in candidates if p.exists()), None)
+    if dll_path is None:
+        return []
+    try:
+        nvml = ctypes.WinDLL(str(dll_path))
+    except Exception:
+        return []
+
+    class _NvmlMemory(ctypes.Structure):
+        _fields_ = [("total", ctypes.c_ulonglong), ("free", ctypes.c_ulonglong), ("used", ctypes.c_ulonglong)]
+
+    class _NvmlUtilization(ctypes.Structure):
+        _fields_ = [("gpu", ctypes.c_uint), ("memory", ctypes.c_uint)]
+
+    signatures = {
+        'nvmlInit_v2': [], 'nvmlShutdown': [],
+        'nvmlDeviceGetCount_v2': [ctypes.POINTER(ctypes.c_uint)],
+        'nvmlSystemGetDriverVersion': [ctypes.POINTER(ctypes.c_char), ctypes.c_uint],
+        'nvmlDeviceGetHandleByIndex_v2': [ctypes.c_uint, ctypes.POINTER(ctypes.c_void_p)],
+        'nvmlDeviceGetName': [ctypes.c_void_p, ctypes.POINTER(ctypes.c_char), ctypes.c_uint],
+        'nvmlDeviceGetMemoryInfo': [ctypes.c_void_p, ctypes.POINTER(_NvmlMemory)],
+        'nvmlDeviceGetUtilizationRates': [ctypes.c_void_p, ctypes.POINTER(_NvmlUtilization)],
+        'nvmlDeviceGetTemperature': [ctypes.c_void_p, ctypes.c_uint, ctypes.POINTER(ctypes.c_uint)],
+        'nvmlDeviceGetPowerUsage': [ctypes.c_void_p, ctypes.POINTER(ctypes.c_uint)],
+    }
+    try:
+        for name, argtypes in signatures.items():
+            function = getattr(nvml, name)
+            function.argtypes = argtypes
+            function.restype = ctypes.c_int
+    except AttributeError:
+        return []
+
+    initialized = False
+    try:
+        if nvml.nvmlInit_v2() != 0:
+            return []
+        initialized = True
+        count = ctypes.c_uint(0)
+        if nvml.nvmlDeviceGetCount_v2(ctypes.byref(count)) != 0:
+            return []
+        drv_buf = ctypes.create_string_buffer(80)
+        driver_version = None
+        if nvml.nvmlSystemGetDriverVersion(drv_buf, 80) == 0:
+            driver_version = drv_buf.value.decode('utf-8', errors='replace')
+        gpus = []
+        for idx in range(min(count.value, 32)):
+            handle = ctypes.c_void_p()
+            if nvml.nvmlDeviceGetHandleByIndex_v2(idx, ctypes.byref(handle)) != 0:
+                continue
+            name_buf = ctypes.create_string_buffer(96)
+            name = "NVIDIA GPU"
+            if nvml.nvmlDeviceGetName(handle, name_buf, 96) == 0:
+                name = name_buf.value.decode('utf-8', errors='replace')
+            mem = _NvmlMemory()
+            total_mb = used_mb = free_mb = None
+            if nvml.nvmlDeviceGetMemoryInfo(handle, ctypes.byref(mem)) == 0:
+                total_mb = int(mem.total // (1024 * 1024))
+                used_mb = int(mem.used // (1024 * 1024))
+                free_mb = int(mem.free // (1024 * 1024))
+            util = _NvmlUtilization()
+            gpu_util = None
+            if nvml.nvmlDeviceGetUtilizationRates(handle, ctypes.byref(util)) == 0:
+                gpu_util = int(util.gpu)
+            temp = ctypes.c_uint(0)
+            temp_c = None
+            if nvml.nvmlDeviceGetTemperature(handle, 0, ctypes.byref(temp)) == 0:
+                temp_c = int(temp.value)
+            power_mw = ctypes.c_uint(0)
+            power_w = None
+            if nvml.nvmlDeviceGetPowerUsage(handle, ctypes.byref(power_mw)) == 0:
+                power_w = round(power_mw.value / 1000.0, 1)
+            gpus.append({
+                "index": idx,
+                "name": name,
+                "vram_total_mb": total_mb,
+                "vram_total_gb": round(total_mb / 1024, 2) if total_mb else None,
+                "vram_used_mb": used_mb,
+                "vram_free_mb": free_mb,
+                "utilization_gpu_percent": gpu_util,
+                "temperature_c": temp_c,
+                "power_watts": power_w,
+                "driver_version": driver_version,
+                "telemetry_source": "nvml.dll (direct ctypes)",
+            })
+        return gpus
+    except Exception:
+        return []
+    finally:
+        if initialized:
+            try:
+                nvml.nvmlShutdown()
+            except Exception:
+                pass

@@ -15,6 +15,8 @@ from windows_agent.tools import diagnostics as terminal_tools
 def _no_real_keyboard(monkeypatch):
     monkeypatch.setattr(desktop_agent.auto, "SendKeys", Mock())
     monkeypatch.setattr(desktop_agent.auto, "GetFocusedControl", Mock(return_value=None))
+    monkeypatch.setattr(desktop_agent.auto, "WalkControl", Mock(return_value=iter(())))
+    monkeypatch.setattr(desktop_agent.system_profile, "query_nvml_gpus", Mock(return_value=[]))
 
 
 def _make_agent(read_only=False, strict_approval=False):
@@ -339,3 +341,65 @@ def test_fallback_typing_refuses_wrong_focus(monkeypatch):
     with pytest.raises(ValueError, match="did not receive focus"):
         agent.type_text("1:1", "hello", append=True)
     desktop_agent.auto.SendKeys.assert_not_called()
+
+
+def test_dynamic_tool_router_reduces_schema_bloat():
+    args = SimpleNamespace(read_only=False, online_docs=True, dynamic_routing=True)
+    all_tools = agent_runtime.available_tools(desktop_agent.TOOLS, args)
+    routed_hw = agent_runtime.select_tools_for_task(desktop_agent.TOOLS, args, "Check how much VRAM my GPU has and check SSD health")
+    assert len(routed_hw) < len(all_tools)
+    routed_names = {t["function"]["name"] for t in routed_hw}
+    assert "inspect_gpu" in routed_names and "inspect_storage" in routed_names
+    assert "set_wallpaper_slideshow" not in routed_names
+
+
+def test_batch_actions_executes_pipeline_in_one_turn_and_halts_on_error(tmp_path):
+    agent = _make_agent(read_only=False)
+    target_dir = tmp_path / "batch_out"
+    src_img = tmp_path / "src.png"
+    Image.new("RGB", (320, 180), (10, 20, 30)).save(src_img, format="PNG")
+    dst_img = target_dir / "resized.png"
+    note_file = target_dir / "summary.txt"
+
+    res = agent.batch_actions([
+        {"tool": "create_directory", "arguments": {"path": str(target_dir)}},
+        {"tool": "resize_image", "arguments": {"source": str(src_img), "destination_path": str(dst_img), "width": 640, "height": 360, "mode": "pad"}},
+        {"tool": "create_text_file", "arguments": {"path": str(note_file), "text": "Batch pipeline done"}},
+    ])
+    assert res["batch_completed"] is True
+    assert res["steps_executed"] == 3
+    assert dst_img.is_file() and note_file.read_text(encoding="utf-8") == "Batch pipeline done"
+
+    # Halts immediately on first failing step without running subsequent steps
+    bad_res = agent.batch_actions([
+        {"tool": "read_text_file", "arguments": {"path": str(tmp_path / "missing.txt")}},
+        {"tool": "create_text_file", "arguments": {"path": str(target_dir / "should_not_exist.txt"), "text": "nope"}},
+    ])
+    assert bad_res["batch_completed"] is False
+    assert bad_res["stopped_at_step"] == 1
+    assert not (target_dir / "should_not_exist.txt").exists()
+
+
+def test_fast_completion_review_gate():
+    args_fast = SimpleNamespace(fast_review=True)
+    args_std = SimpleNamespace(fast_review=False)
+    ok_evidence = [{"tool": "inspect_gpu", "arguments": {}, "outcome": "returned", "summary": {"verified": True}}]
+    err_evidence = [{"tool": "inspect_gpu", "arguments": {}, "outcome": "error"}]
+
+    assert agent_runtime.should_skip_completion_review("Check GPU", "You have an RTX 3070 with 8 GB VRAM.", ok_evidence, args_fast) is True
+    assert agent_runtime.should_skip_completion_review("Check GPU", "Do you want me to check?", ok_evidence, args_fast) is False
+    assert agent_runtime.should_skip_completion_review("Check GPU", "Failed.", err_evidence, args_fast) is False
+    assert agent_runtime.should_skip_completion_review("Check GPU", "You have an RTX 3070.", ok_evidence, args_std) is False
+
+
+def test_experience_replay_records_and_recalls_trajectories(tmp_path, monkeypatch):
+    from windows_agent import runtime as agent_runtime
+    monkeypatch.setenv("SCREEN_USE_HOME", str(tmp_path / "exp_home"))
+    evidence = [
+        {"tool": "inspect_images", "arguments": {"path": "C:/Captures"}, "outcome": "returned", "summary": {"verified": True}},
+        {"tool": "resize_image", "arguments": {"width": 2560, "height": 1440}, "outcome": "returned", "summary": {"verified": True}},
+    ]
+    agent_runtime.record_task_trajectory("Upscale wallpaper image in Captures to 1440p", evidence, success=True)
+    hints = agent_runtime.recall_task_trajectories("Upscale wallpaper image in Captures")
+    assert len(hints) >= 1
+    assert any(step["tool"] == "resize_image" for step in hints[0]["previous_verified_steps"])
