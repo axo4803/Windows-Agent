@@ -42,11 +42,13 @@ For inspection with restricted navigation and online documentation lookup disabl
 
 - Inspect visible windows, accessible controls, and screen text.
 - Find and launch supported applications, activate windows, and navigate supported controls.
-- Read system, GPU, storage, and network diagnostic information.
-- List directories and read bounded text files.
-- Create directories and text files, and copy files to new destinations.
-- Inspect image dimensions and create resized PNG copies.
-- Change wallpaper or configure a slideshow with explicit approval.
+- Read GPU VRAM and telemetry, RAM module inventory, storage health, and network diagnostics where supported by Windows and installed utilities.
+- Read the current Wi-Fi SSID through `inspect_wifi`; saved adapter labels such as `Wi-Fi` are not network names.
+- Search files and folders, list directories, and read text files in bounded chunks.
+- Create directories and text files; copy or move files to new destinations. File conflicts can use numbered names, or backups/appending for text updates.
+- Inspect image dimensions and create resized PNG, JPEG, WEBP, or BMP copies using crop, blurred padding, contain, or stretch modes.
+- Change wallpaper fit or configure a slideshow; use `--strict-approval` to confirm these changes.
+- Type into supported editable controls, use guarded keyboard actions, and scroll controls exposing a UI Automation ScrollPattern.
 - Look up documentation on allowlisted official sites when online lookup is enabled.
 - Save conversation history, durable preferences, and local system snapshots.
 
@@ -54,11 +56,15 @@ Available actions depend on the selected mode and the target application's acces
 
 ## Controls and limits
 
-Expanded mode is the default and permits supported UI and file changes. `--read-only` restricts UI and file actions. Wallpaper changes, document replacement, and ambiguous confirmations request approval. File creation and copy tools do not overwrite existing files. UI label checks are not a secure sandbox.
+Expanded mode is the default and permits supported UI and file changes. `--read-only` restricts UI and file actions. Purchase controls, keyboard activation and editing shortcuts, and replacement of substantial or unreadable existing text request approval. Use `--strict-approval` to additionally confirm file writes, wallpaper changes, typing, scrolling, and generic UI confirmations. UI label checks are not a secure sandbox.
+
+Copy and move tools refuse to overwrite existing destinations. Text updates can explicitly use `on_conflict='backup'` to retain the original before replacement, or `'append'` to add content. Moving removes the source after a successful size-checked copy. Scrolling requires a supported ScrollPattern and fails rather than sending navigation keys to an unrelated control.
 
 Stop a running task with **Ctrl+C** or **Ctrl+Alt+F12**. You can also create `desktop_agent.stop` in the project folder; remove it before the next run. An action already dispatched may finish before the stop takes effect.
 
-Default task limits are 24 tool calls, 20 model turns, and 300 seconds. Adjust them with `--max-tools`, `--max-turns`, and `--max-seconds`. Terminal diagnostics accept a fixed list of commands; the agent does not expose an arbitrary shell tool.
+Default task limits are 40 tool calls, 30 model turns, 600 seconds, and 16 app launches. Adjust the first three with `--max-tools`, `--max-turns`, and `--max-seconds`. Terminal diagnostics accept a fixed list of commands, including GPU and Ollama diagnostics; the agent does not expose an arbitrary shell tool.
+
+Use `/gpu` and `/storage` for live hardware reports, or `/refresh-system` to refresh the saved inventory. Some telemetry requires compatible drivers, Windows storage support, or permissions; unavailable values remain unknown.
 
 Model requests go to the local Ollama server. Online documentation searches use the network unless `--offline` is set. Logs and saved conversations in `logs/` and `memory/` can contain inspected file and screen text.
 
