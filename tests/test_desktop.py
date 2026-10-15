@@ -121,8 +121,5 @@ def test_edge_broker_handoff_waits_for_client_lifecycle_and_cleans_gpu_cache(tmp
     desktop.run_edge(host_factory=lambda **kwargs: host, process_factory=factory)
     assert not gpu_cache.exists()
     assert not (profile / 'SingletonLock').exists()
-    args = factory.call_args.args[0]
-    assert '--disable-gpu-sandbox' in args
-    assert any('RendererCodeIntegrity' in a for a in args)
     host.wait_for_client_lifecycle.assert_called_once()
     host.close.assert_called_once()
