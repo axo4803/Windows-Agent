@@ -191,6 +191,12 @@ def run_edge(model='qwen3.5:4b', host_factory=DesktopHost, process_factory=subpr
             '--disable-extensions',
             '--disable-sync',
             '--disable-background-networking',
+            # Required, not defensive. With the GPU sandbox enabled the window
+            # opens but Edge never starts a renderer, so the page stays blank.
+            # Verified by A/B on Windows 11: dropping --disable-gpu-sandbox
+            # reintroduces exactly that. Edge warns the flag is unsupported; the
+            # warning is the accepted cost of a working window, so do not remove
+            # these as sandbox cleanup without re-running that test.
             '--disable-features=RendererCodeIntegrity,msEdgeSidebarV2,msHub,Translate',
             '--disable-gpu-sandbox',
             f'--window-size={width},{height}',
