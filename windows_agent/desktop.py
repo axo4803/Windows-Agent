@@ -5,12 +5,12 @@ import json
 import logging
 import os
 from pathlib import Path
+import shutil
+import subprocess
 import sys
 import threading
-import subprocess
-
-from windows_agent import PROJECT_ROOT
-from windows_agent.web.server import LocalServer
+import time
+import webbrowser
 
 from windows_agent import PROJECT_ROOT
 from windows_agent.web.server import LocalServer
@@ -64,9 +64,14 @@ def single_instance(path=LOCK):
 
 
 class DesktopHost:
-    def __init__(self, model='qwen3.5:4b', server_factory=LocalServer):
-        # An OS-assigned port leaves an existing browser server on 8765 untouched.
-        self.server = server_factory(0, default_model=model)
+    def __init__(self, model='qwen3.5:4b', server_factory=LocalServer, preferred_port=8765):
+        if server_factory is LocalServer:
+            try:
+                self.server = server_factory(preferred_port, default_model=model)
+            except OSError:
+                self.server = server_factory(0, default_model=model)
+        else:
+            self.server = server_factory(0, default_model=model)
         self.thread = threading.Thread(target=self.server.serve_forever,
                                        kwargs={'poll_interval': 0.1}, daemon=True)
         self.thread.start()
@@ -76,6 +81,25 @@ class DesktopHost:
     @property
     def url(self):
         return f'http://127.0.0.1:{self.server.server_address[1]}'
+
+    def wait_for_client_lifecycle(self, connect_timeout=10.0, idle_timeout=6.0):
+        """Keep the loopback server alive when msedge.exe delegates the window to a background broker process."""
+        srv = self.server
+        if not hasattr(srv, 'client_connected') or not isinstance(srv.client_connected, threading.Event):
+            return
+        if not srv.client_connected.wait(timeout=connect_timeout):
+            # If the Edge app window failed to connect (e.g. blocked by system policy), open default browser so user is never stuck
+            try:
+                webbrowser.open(self.url)
+            except Exception:
+                pass
+            if not srv.client_connected.wait(timeout=connect_timeout):
+                return
+        while not self.closed and not srv.client_closed.is_set():
+            time.sleep(0.5)
+            idle = time.monotonic() - getattr(srv, 'last_client_seen', time.monotonic())
+            if idle > idle_timeout:
+                break
 
     def close(self):
         if self.closed:
@@ -89,14 +113,35 @@ class DesktopHost:
             self.thread.join(timeout=2)
 
 
+def _clean_edge_profile_caches(profile_dir: Path):
+    """Remove corrupted GPU/shader caches and stale lock files that cause blank Chromium windows."""
+    for rel in (
+        'SingletonLock', 'SingletonCookie', 'SingletonSocket',
+        'ShaderCache', 'GrShaderCache', 'GraphiteDawnCache',
+        'Default/GPUCache', 'Default/Code Cache', 'Default/DawnCache',
+    ):
+        target = profile_dir / rel
+        try:
+            if target.is_dir():
+                shutil.rmtree(target, ignore_errors=True)
+            elif target.exists():
+                target.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def run_desktop(webview, model='qwen3.5:4b', host_factory=DesktopHost, settings_path=SETTINGS):
+    os.environ.setdefault(
+        'WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS',
+        '--disable-features=RendererCodeIntegrity --disable-gpu-sandbox'
+    )
     host = host_factory(model=model)
     window = None
     try:
         width, height = load_size(settings_path)
         webview.settings['ALLOW_FILE_URLS'] = False
         window = webview.create_window('Windows-Agent', host.url, width=width, height=height,
-                                      min_size=MIN_SIZE, background_color='#f8faf9', text_select=True)
+                                       min_size=MIN_SIZE, background_color='#f8faf9', text_select=True)
         # No Python methods are exposed to page scripts; the existing HTTP controls stay in use.
         webview.start(gui='edgechromium', debug=False, private_mode=True)
     finally:
@@ -131,16 +176,33 @@ def run_edge(model='qwen3.5:4b', host_factory=DesktopHost, process_factory=subpr
     width, height = load_size()
     profile = PROJECT_ROOT / 'memory' / 'desktop-edge-profile'
     profile.mkdir(parents=True, exist_ok=True)
+    _clean_edge_profile_caches(profile)
     host = host_factory(model=model)
     process = None
+    start_ts = time.monotonic()
     try:
-        process = process_factory([str(executable), '--app=' + host.url,
-                                   '--user-data-dir=' + str(profile), '--no-first-run',
-                                   '--disable-background-mode', f'--window-size={width},{height}'],
-                                  shell=False, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+        cmd = [
+            str(executable),
+            '--app=' + host.url,
+            '--user-data-dir=' + str(profile),
+            '--no-first-run',
+            '--no-default-browser-check',
+            '--disable-background-mode',
+            '--disable-extensions',
+            '--disable-sync',
+            '--disable-background-networking',
+            '--disable-features=RendererCodeIntegrity,msEdgeSidebarV2,msHub,Translate',
+            '--disable-gpu-sandbox',
+            f'--window-size={width},{height}',
+        ]
+        process = process_factory(cmd, shell=False, creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         code = process.wait()
-        if code:
+        elapsed = time.monotonic() - start_ts
+        if code and not getattr(getattr(host, 'server', None), 'client_connected', threading.Event()).is_set():
             raise RuntimeError(f'The desktop window exited with code {code}')
+        # If msedge.exe handed off window creation to an existing Edge broker process, wait for the client window lifecycle
+        if elapsed < 3.0 and hasattr(host, 'wait_for_client_lifecycle'):
+            host.wait_for_client_lifecycle()
     finally:
         if process is not None and process.poll() is None:
             process.terminate()

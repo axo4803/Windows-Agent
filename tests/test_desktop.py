@@ -100,3 +100,29 @@ def test_startup_error_is_not_masked_by_window_size(tmp_path):
     with pytest.raises(RuntimeError, match='Original renderer failure'):
         desktop.run_desktop(view, host_factory=lambda **kwargs: host, settings_path=tmp_path / 'size.json')
     host.close.assert_called_once()
+
+
+
+def test_edge_broker_handoff_waits_for_client_lifecycle_and_cleans_gpu_cache(tmp_path, monkeypatch):
+    monkeypatch.setattr(desktop, 'PROJECT_ROOT', tmp_path)
+    monkeypatch.setattr(desktop, 'edge_executable', lambda: Path('C:/Edge/msedge.exe'))
+    profile = tmp_path / 'memory' / 'desktop-edge-profile'
+    gpu_cache = profile / 'Default' / 'GPUCache'
+    gpu_cache.mkdir(parents=True)
+    (gpu_cache / 'data_0').write_bytes(b'corrupt')
+    (profile / 'SingletonLock').write_text('stale')
+
+    host = Mock(url='http://127.0.0.1:8765')
+    process = Mock()
+    process.wait.return_value = 0
+    process.poll.return_value = 0
+    factory = Mock(return_value=process)
+
+    desktop.run_edge(host_factory=lambda **kwargs: host, process_factory=factory)
+    assert not gpu_cache.exists()
+    assert not (profile / 'SingletonLock').exists()
+    args = factory.call_args.args[0]
+    assert '--disable-gpu-sandbox' in args
+    assert any('RendererCodeIntegrity' in a for a in args)
+    host.wait_for_client_lifecycle.assert_called_once()
+    host.close.assert_called_once()

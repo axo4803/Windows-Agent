@@ -4,6 +4,8 @@ import json
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 import secrets
+import threading
+import time
 from urllib.parse import parse_qs, urlsplit
 import webbrowser
 
@@ -11,6 +13,7 @@ from .session import Session
 
 STATIC = Path(__file__).with_name("static")
 FILES = {"/": ("index.html", "text/html; charset=utf-8"),
+         "/index.html": ("index.html", "text/html; charset=utf-8"),
          "/app.js": ("app.js", "text/javascript; charset=utf-8"),
          "/style.css": ("style.css", "text/css; charset=utf-8")}
 
@@ -43,6 +46,13 @@ class LocalServer(ThreadingHTTPServer):
         actual_port = self.server_address[1]
         self.allowed_hosts = {f"127.0.0.1:{actual_port}", f"localhost:{actual_port}"}
         self.allowed_origins = {"http://" + host for host in self.allowed_hosts}
+        self.client_connected = threading.Event()
+        self.client_closed = threading.Event()
+        self.last_client_seen = time.monotonic()
+
+    def touch_client(self):
+        self.last_client_seen = time.monotonic()
+        self.client_connected.set()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -61,16 +71,18 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("Referrer-Policy", "no-referrer")
-        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
+        self.send_header("Content-Security-Policy", "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
-        self.wfile.write(body)
+        if body:
+            self.wfile.write(body)
 
     def allowed(self, authenticated=False):
-        if self.headers.get("Host", "") not in self.server.allowed_hosts:
+        host = (self.headers.get("Host") or "").strip().lower()
+        if host not in self.server.allowed_hosts:
             self.reply(403, {"error": "Use the local server address."})
             return False
         origin = self.headers.get("Origin")
-        if origin is not None and origin not in self.server.allowed_origins:
+        if origin is not None and origin.strip().lower() not in self.server.allowed_origins:
             self.reply(403, {"error": "This request must come from the local interface."})
             return False
         if authenticated and not secrets.compare_digest(self.headers.get("X-Agent-Token", ""), self.server.token):
@@ -82,9 +94,12 @@ class Handler(BaseHTTPRequestHandler):
         route = urlsplit(self.path)
         if not self.allowed(authenticated=route.path.startswith("/api/") and route.path != "/api/bootstrap"):
             return
+        self.server.touch_client()
         if route.path in FILES:
             filename, mime = FILES[route.path]
             self.reply(200, (STATIC / filename).read_bytes(), mime)
+        elif route.path == "/favicon.ico":
+            self.reply(204, b"", "image/x-icon")
         elif route.path == "/api/bootstrap":
             self.reply(200, {"token": self.server.token, "default_model": self.server.default_model,
                              "desktop_mode": hasattr(self.server, 'desktop_size_callback')})
@@ -104,6 +119,7 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.allowed(authenticated=True):
             return
+        self.server.touch_client()
         if self.headers.get("Content-Type", "").split(";")[0].strip() != "application/json":
             self.reply(415, {"error": "Send JSON."})
             return
@@ -132,6 +148,9 @@ class Handler(BaseHTTPRequestHandler):
                 if type(width) is not int or type(height) is not int or not (960 <= width <= 3840 and 640 <= height <= 2160):
                     raise ValueError('Invalid desktop window dimensions')
                 self.server.desktop_size_callback(width, height)
+                result = {'ok': True}
+            elif route == '/api/desktop-close' and hasattr(self.server, 'desktop_size_callback'):
+                self.server.client_closed.set()
                 result = {'ok': True}
             else:
                 self.reply(404, {"error": "Not found."})
