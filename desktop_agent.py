@@ -180,6 +180,9 @@ def schema(name, description, properties=None, required=None):
 
 
 TOOLS = [
+    schema('upscale_image', 'Neurally upscale an image using the installed Upscayl engine; preserves source, creates a new PNG, and verifies dimensions. Digital Art uses model=digital-art; no GUI is needed.',
+           {'source': {'type': 'string'}, 'destination_path': {'type': 'string'},
+            'scale': {'type': 'integer', 'enum': [2, 3, 4]}, 'model': {'type': 'string', 'enum': ['digital-art', 'standard', 'high-fidelity']}}, ['source', 'destination_path']),
     schema("resize_image", "Create a new image (PNG/JPEG/WEBP/BMP) at target dimensions using Lanczos resampling ('crop' centered crop, 'pad' aspect-preserving with blurred background and zero cropped content, 'contain', or 'stretch'), preserving source; not neural upscaling",
            {"source": {"type": "string"}, "destination_path": {"type": "string"}, "width": {"type": "integer"}, "height": {"type": "integer"},
             "mode": {"type": "string", "enum": ["crop", "pad", "contain", "stretch"]}}, ["source", "destination_path", "width", "height"]),
@@ -292,6 +295,10 @@ class DesktopAgent:
         with self.log_path.open("a", encoding="utf-8") as log:
             log.write(json.dumps(record, ensure_ascii=False, default=str) + "\n")
 
+    def show_response(self, text):
+        """Present a final answer; alternate front ends can override this hook."""
+        print_agent_response(text)
+
     @staticmethod
     def brief_result(result):
         if 'image_base64' in result:
@@ -310,18 +317,19 @@ class DesktopAgent:
                     "truncated": result["truncated"]}
         if "matches" in result and "base_directory" in result:
             return {"base_directory": result["base_directory"], "pattern": result["pattern"],
-                    "match_count": len(result["matches"]), "truncated": result.get("truncated", False)}
+                    "match_count": len(result["matches"]), "matches": result['matches'][:10],
+                    "truncated": result.get("truncated", False)}
         if "error" in result:
             return result["error"]
         if "windows" in result:
-            return f"{len(result['windows'])} windows; {len(result.get('start_menu_applications', []))} Start Menu apps"
+            return {'windows': result['windows'][:15], 'start_menu_app_count': len(result.get('start_menu_applications', []))}
         if "elements" in result:
             return {"window": result.get("window"), "element_count": len(result["elements"]),
                     "connection_status_from_ui": result.get("connection_status_from_ui", {})}
         if "display_adapters" in result:
             return result
         if "items" in result:
-            return {"directory": result.get("directory"), "item_count": len(result["items"])}
+            return {"directory": result.get("directory"), "item_count": len(result["items"]), 'items': result['items'][:10]}
         if "text" in result:
             return {"file": result.get("file"), "bytes_read": result.get("bytes_read"),
                     "truncated": result.get("truncated", False), "read_only": result.get("read_only")}
@@ -1151,18 +1159,35 @@ class DesktopAgent:
                 entry = self.discovered_apps.get(app_arg)
             if entry is None:
                 raise ValueError("Unknown app ID; use find_applications first")
-            if self.launches >= 16:
-                raise ValueError("Launch limit reached")
             self.check()
             fresh = app_catalog.catalog(self.check).get(app_arg)
             if fresh != entry:
                 raise ValueError("Registered app changed; discover it again")
-            app_catalog.launch(entry)
-            self.launches += 1
-            self.stop.wait(2)
-            self.check()
-            return {"launch_requested": entry['name'], "discovery": self.discover_applications(),
-                    "next": "Identify the matching app window by title before activating."}
+            found = self.discover_applications()
+            reused = self._registered_app_window(entry, found)
+            if reused:
+                return {'launch_requested': entry['name'], 'reused': True,
+                        'active_window_id': reused, **self.activate_window(reused)}
+            pending = getattr(self, '_pending_app_launches', set())
+            self._pending_app_launches = pending
+            if app_arg not in pending:
+                if self.launches >= 16:
+                    raise ValueError("Launch limit reached")
+                app_catalog.launch(entry)
+                self.launches += 1
+                pending.add(app_arg)
+            # Bound startup polling; do not spawn another instance because rendering is slow.
+            for _ in range(32):
+                self.stop.wait(0.25)
+                self.check()
+                found = self.discover_applications()
+                window_id = self._registered_app_window(entry, found)
+                if window_id:
+                    pending.discard(app_arg)
+                    return {'launch_requested': entry['name'], 'active_window_id': window_id,
+                            **self.activate_window(window_id)}
+            return {'launch_requested': entry['name'], 'startup_pending': True, 'discovery': found,
+                    'next': 'No matching window appeared during startup polling. Inspect running windows; another instance will not be launched while this request is pending.'}
         lower_key = app_arg.casefold()
         if lower_key not in self.apps:
             # In expanded mode, automatically resolve application names via find_applications
@@ -1208,6 +1233,26 @@ class DesktopAgent:
                 result[key] = activation[key]
         return result
 
+    def _registered_app_window(self, entry, found):
+        name = entry['name'].strip().casefold()
+        app_id = entry['app_id']
+        expected = Path(app_id).stem.casefold() if app_id.lower().endswith('.exe') else name
+        normalize = lambda text: re.sub(r'[^\w]', '', text.casefold())
+        for row in found.get('windows', []):
+            title = row['title'].strip().casefold()
+            if title != name and not title.endswith(' - ' + name):
+                continue
+            control = self.windows.get(row['window_id'])
+            if control is None:
+                continue
+            actual = self.process_path(control.ProcessId)
+            if not actual or normalize(Path(actual).stem) != normalize(expected):
+                continue
+            if Path(app_id).is_absolute() and str(Path(actual)).casefold() != str(Path(app_id)).casefold():
+                continue
+            return row['window_id']
+        return None
+
     def _execute_tool(self, name, arguments):
         """One budget/retry/denial path for direct calls and batch steps."""
         self.check()
@@ -1227,7 +1272,10 @@ class DesktopAgent:
             elif self._task_failures.get(signature, 0) >= 2:
                 result = {'error': 'Identical action already failed twice. Choose a different supported approach.', 'retry_blocked': True}
             else:
-                result = getattr(self, name)(**arguments)
+                guard = getattr(self, '_progress_guard', None)
+                result = guard.cached(name, arguments) if guard else None
+                if result is None:
+                    result = getattr(self, name)(**arguments)
         except Exception as exc:
             result = {'error': f'{type(exc).__name__}: {exc}'}
             if isinstance(exc, PermissionError):
@@ -1235,6 +1283,8 @@ class DesktopAgent:
             if hasattr(self, 'log_path'):
                 self.log_event('tool_exception', call=self.calls, tool=name, error=repr(exc), traceback=traceback.format_exc())
         status = agent_runtime.outcome(result)
+        if getattr(self, '_progress_guard', None):
+            self._progress_guard.observe(name, arguments, result)
         if status == 'denied':
             self._task_denied_actions.add(signature)
         if status in {'error', 'unverified', 'denied'}:
@@ -1268,12 +1318,15 @@ class DesktopAgent:
         denied_actions = set()
         self._task_failures = failures
         self._task_denied_actions = denied_actions
+        self._progress_guard = agent_runtime.ProgressGuard()
         reviewed_at = None
         empty_replies = 0
         try:
             turn_starts = []
             for turn in range(self.args.max_turns):
                 self.check()
+                if self._progress_guard.stalled >= 2:
+                    messages.append({'role': 'user', 'content': 'Execution checkpoint: recent identical calls produced no new progress. Reuse the known paths below and take a DIFFERENT supported next step, or explain the concrete blocker. Repeated cached reads do not advance the task.'})
                 if len(turn_starts) > 2:
                     cut = turn_starts[-2]
                     messages = messages[:base_count] + messages[cut:]
@@ -1309,6 +1362,14 @@ class DesktopAgent:
                                            for c in (msg.tool_calls or [])])
                 messages.append(msg.model_dump(exclude_none=True, exclude={"thinking"}))
                 if not msg.tool_calls:
+                    if task_evidence and agent_runtime.unfinished_reply(msg.content):
+                        empty_replies += 1
+                        if empty_replies > 1:
+                            self.log_event('run_stopped', reason='The model returned unfinished verification statements instead of a final answer')
+                            self.show_response('Task ended without a usable final answer. Recent tool evidence: ' + agent_runtime.progress(task_evidence))
+                            return
+                        messages.append({'role': 'user', 'content': 'Your reply only announced verification. Complete the check now. State the actual result, output path and dimensions from tool evidence, and any unresolved requirement. Do not end with an announcement that you need to check.'})
+                        continue
                     if not (msg.content or '').strip():
                         empty_replies += 1
                         if empty_replies > 1:
@@ -1325,7 +1386,7 @@ class DesktopAgent:
                         messages.append({"role": "user", "content": agent_runtime.completion_review(original_task, task_evidence)})
                         print("Checking the answer against your full request...", flush=True)
                         continue
-                    print_agent_response(msg.content)
+                    self.show_response(msg.content)
                     try:
                         agent_context.record(original_task, msg.content, task_evidence)
                         answer_recorded = True
@@ -1356,6 +1417,10 @@ class DesktopAgent:
                     task_evidence.append({"tool": name, "arguments": call.function.arguments or {},
                                           "outcome": agent_runtime.outcome(result),
                                           "summary": self.brief_result(result)})
+                    if self._progress_guard.stalled >= 4:
+                        self.log_event('run_stopped', reason='Repeated tools produced no new task progress')
+                        self.show_response('Stopped because repeated tool calls produced no new progress. The task is incomplete. Recent evidence: ' + agent_runtime.progress(task_evidence))
+                        return
                     status = agent_runtime.outcome(result)
                     if status in {"error", "unverified", "denied"}:
                         needs_recovery = True
@@ -1446,6 +1511,10 @@ class DesktopAgent:
         self.require_file_actions(f"Create resized image '{destination_path}' from '{source}' ({width} x {height}, {mode}).")
         return file_actions.resize_image(source, destination_path, width, height, mode=mode)
 
+    def upscale_image(self, source, destination_path, scale=2, model='digital-art'):
+        self.require_file_actions(f"Create {scale}x {model} neural upscale '{destination_path}' from '{source}'.")
+        return file_actions.upscale_image(source, destination_path, self.check, scale=scale, model=model)
+
     def set_wallpaper(self, path, fit="fill"):
         self.require_file_actions()
         approver = self.approve if getattr(self.args, "strict_approval", False) else None
@@ -1528,6 +1597,7 @@ def capabilities(args):
             "batch up to 8 supported steps under the same task budget and approval checks",
         ],
         "image_actions": [] if args.read_only else [
+            "neural 2x/3x/4x upscale through installed Upscayl models, with new PNG output and verified dimensions",
             "resize/format to PNG/JPEG/WEBP/BMP with Lanczos ('crop', 'pad' aspect-preserving with blurred background, 'contain', 'stretch')",
             "set single wallpaper (Fill/Fit/Stretch/Center/Tile/Span) or folder slideshow directly",
         ],

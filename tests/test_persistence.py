@@ -137,3 +137,26 @@ def test_visual_capture_goes_to_local_model_without_image_in_logs(harness):
     ({"errors": [], "ok": True}, "returned")])
 def test_failure_evidence_classification(result, expected):
     assert agent_runtime.outcome(result) == expected
+
+
+def test_unfinished_verification_is_retried_before_final_answer(harness):
+    agent, client, record, show = harness
+    client.chat.side_effect = [tool('inspect_storage'),
+                              reply('I need to verify the completion of each requested outcome against the evidence:'),
+                              reply('Verified: Example SSD.'), reply('Verified: Example SSD.')]
+    agent.run('Identify my SSD')
+    show.assert_called_once_with('Verified: Example SSD.')
+    assert record.call_args.args[1] == 'Verified: Example SSD.'
+
+
+def test_successful_read_loop_stops_before_turn_budget(harness):
+    agent, client, record, show = harness
+    agent.search_files = Mock(return_value={'base_directory':'C:/Downloads', 'pattern':'UpscaleTest*',
+                                           'matches':[{'path':'C:/Downloads/UpscaleTest.jfif'}]})
+    client.chat.side_effect = [tool('search_files', path='C:/Downloads', pattern='UpscaleTest*')] * 10
+    agent.run('Find UpscaleTest and process it')
+    assert client.chat.call_count == 5
+    agent.search_files.assert_called_once()
+    assert 'task is incomplete' in show.call_args.args[0].lower()
+    assert 'without a verified final answer' in record.call_args.args[1]
+    assert not any(call.args[0] == 'run_completed' for call in agent.log_event.call_args_list)

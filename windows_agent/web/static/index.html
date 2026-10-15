@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light"><title>Windows-Agent · Local workspace</title>
+  <link rel="stylesheet" href="/style.css"><script src="/app.js" defer></script>
+</head>
+<body>
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="Windows-Agent home"><span class="brand-mark">w<span>•</span></span><span>Windows<span class="brand-light">Agent</span></span></a>
+    <button id="new-chat" class="new-chat" title="Clear conversation context and start a new chat (Alt+N)"><span>＋</span> New chat <kbd>＋</kbd></button>
+    <div class="sidebar-label">RECENT TASKS</div><nav id="recent" aria-label="Recent tasks"><p class="muted sidebar-empty">Your tasks will appear here.</p></nav>
+    <div class="sidebar-bottom"><span class="local-icon">⌂</span><div><strong>Runs on your computer</strong><span>Local model. Local workspace.</span></div><span class="online-dot"></span></div>
+  </aside>
+  <main>
+    <header class="topbar"><div class="breadcrumbs">Workspace <span>/</span> <strong id="conversation-title">New conversation</strong></div><div class="topbar-actions"><button id="new-chat-mobile" class="quiet-button mobile-new" title="Clear conversation context and start a new chat" aria-label="New chat">＋</button><button id="activity-toggle" class="quiet-button" aria-expanded="true" aria-controls="activity-panel">Activity <span>↗</span></button></div></header>
+    <div id="notice" class="notice" role="status" hidden></div>
+    <section id="chat" class="chat" aria-label="Conversation">
+      <div id="welcome" class="welcome">
+        <div class="welcome-mark" aria-hidden="true">w<span>•</span></div>
+        <div class="eyebrow">YOUR LOCAL WINDOWS ASSISTANT</div>
+        <h1>What can I help you do?</h1><p>Ask about your computer, find a file, or get help with a desktop task.<br>You can follow every step as it happens.</p>
+        <div class="suggestions">
+          <button data-prompt="Inspect my GPU and report its total and available VRAM."><span class="suggestion-icon">▦</span><strong>Check my hardware</strong><span>See GPU details and VRAM</span><i>↗</i></button>
+          <button data-prompt="What is the actual SSID of the Wi-Fi network I am connected to right now?"><span class="suggestion-icon wifi-icon">⌁</span><strong>What's my Wi-Fi?</strong><span>Find the connected network name</span><i>↗</i></button>
+          <button data-prompt="List the files in my Downloads folder, without moving or changing anything."><span class="suggestion-icon">▱</span><strong>Explore my Downloads</strong><span>Take a look at recent files</span><i>↗</i></button>
+        </div>
+      </div>
+      <div id="messages" class="messages" aria-live="polite" aria-relevant="additions text"></div>
+    </section>
+    <section id="approval-card" class="approval-card" aria-labelledby="approval-title" hidden><div class="approval-heading"><span>!</span><strong id="approval-title">Your approval is needed</strong></div><p id="approval-description"></p><div><button id="deny" class="secondary-button">Deny action</button><button id="approve" class="primary-button">Approve action</button></div></section>
+    <div class="composer-area"><form id="task-form" class="composer"><label class="sr-only" for="task">Your task</label><textarea id="task" placeholder="Ask Windows-Agent to do something…" rows="2" maxlength="12000"></textarea><div class="composer-bottom"><span class="composer-hint">↵ Send <span>·</span> Shift + Enter for a new line</span><button id="send" type="submit" class="send-button" aria-label="Send task">↑</button><button id="stop" type="button" class="stop-button" hidden><span>■</span> Stop task</button></div></form><p class="composer-footnote"><span class="tiny-dot"></span> Powered by local Ollama <span>·</span> <span id="mode-note">Expanded mode</span></p></div>
+  </main>
+  <aside id="activity-panel" class="activity-panel"><header><div><span class="panel-symbol">◷</span> Activity</div><span id="run-state" class="status-tag">Ready</span></header>
+    <section class="configuration"><div class="section-label">LOCAL MODEL <button id="refresh-models" aria-label="Refresh installed models" title="Refresh installed models">↻</button></div><label class="sr-only" for="model">Ollama model</label><select id="model"><option>qwen3.5:4b</option></select><div class="model-health"><span id="health-dot" class="tiny-dot"></span><span id="model-health">Connecting to Ollama…</span></div>
+      <label class="toggle-row" for="read-only"><div><strong>Read-only mode</strong><span>Restrict UI and file actions</span></div><input id="read-only" type="checkbox" role="switch"></label>
+      <label class="toggle-row" for="strict-approval"><div><strong>Ask before changes</strong><span>Require strict action approvals</span></div><input id="strict-approval" type="checkbox" role="switch"></label>
+      <details class="advanced"><summary>Task settings <span>⌄</span></summary><label>Tool calls<input id="max-tools" type="number" min="1" max="200" value="40"></label><label>Model turns<input id="max-turns" type="number" min="1" max="200" value="30"></label><label>Time limit, seconds<input id="max-seconds" type="number" min="1" max="3600" value="600"></label><label class="offline-row"><input id="offline" type="checkbox"> Disable online documentation</label></details>
+    </section>
+    <div class="activity-heading"><span class="section-label">TASK TIMELINE</span><span id="event-count">0 steps</span></div>
+    <section id="timeline" class="timeline" aria-label="Task activity"><div id="activity-empty" class="activity-empty"><span>⋮</span><strong>Nothing running yet</strong><p>Tool calls, results, and approvals<br>will appear here.</p></div></section>
+    <footer class="panel-footer"><span>⌘</span> Emergency stop <kbd>Ctrl + Alt + F12</kbd></footer>
+  </aside>
+</body>
+</html>

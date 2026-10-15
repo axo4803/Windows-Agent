@@ -26,13 +26,21 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest"]
+desktop = ["pywebview>=6,<7", "pythonnet>=3.0,<3.1; sys_platform == 'win32'"]
 
 [project.scripts]
 screen-use-mcp = "screen_use.mcp_server:main"
 windows-agent-mcp = "windows_agent.mcp_server:main"
+windows-agent-ui = "windows_agent.web.server:main"
+
+[project.gui-scripts]
+windows-agent-desktop = "windows_agent.desktop:main"
 
 [tool.setuptools]
 py-modules = ["desktop_agent"]
 
 [tool.setuptools.packages.find]
 include = ["screen_use*", "windows_agent*"]
+
+[tool.setuptools.package-data]
+"windows_agent.web" = ["static/*.html", "static/*.css", "static/*.js"]

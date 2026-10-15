@@ -9,7 +9,7 @@ from . import PROJECT_ROOT
 
 WRITE_TOOLS = {
     'create_directory', 'copy_file', 'move_file', 'create_text_file',
-    'resize_image', 'set_wallpaper', 'set_wallpaper_slideshow',
+    'resize_image', 'upscale_image', 'set_wallpaper', 'set_wallpaper_slideshow',
     'type_text', 'press_keys', 'scroll_window', 'batch_actions',
 }
 WEB_TOOLS = {'search_documentation', 'fetch_documentation'}
@@ -34,6 +34,7 @@ Use live tools for current PC questions; a missing snapshot field is a reason to
 - run_terminal_command runs safe read-only diagnostics including nvidia-smi, ollama list, ollama ps, wmic memorychip/cpu/gpu/diskdrive, tasklist, systeminfo, ipconfig, netstat, and powercfg.
 - search_files locates files or folders by name/glob across directories; list_directory lists a folder; read_text_file reads text files with optional byte offset.
 - resize_image creates verified images using Lanczos resampling in 'crop' (centered crop), 'pad' (aspect-preserving 16:9 with blurred padding and zero cropped content), 'contain', or 'stretch' mode.
+- upscale_image performs neural upscaling through the installed Upscayl engine without opening its GUI. For Upscayl/upscaling requests call this tool directly with the ORIGINAL source and a NEW PNG destination, scale=2 for 2x, and model='digital-art' for Digital Art. NEVER copy or create a file at its output path first: the engine creates it. Keep the source. Only verified output establishes success; resize_image is not neural upscaling. If an output already exists, choose a new numbered PNG and report its actual name. Do not launch the GUI to fix a file-path error.
 - set_wallpaper and set_wallpaper_slideshow apply desktop backgrounds directly and record the previous wallpaper so changes are easily reversible.
 - create_directory, copy_file, move_file, and create_text_file organize and create files non-destructively (supporting on_conflict='rename', 'backup', or 'append' so existing data is never lost).
 For GUI apps, discover_applications first and reuse an existing window when appropriate, or call launch_application with a fixed key, an app: ID from find_applications, or an app name (such as 'CrystalDiskInfo' or 'Upscayl'). Activate a window before inspecting its elements. Use click_element, type_text, press_keys, and scroll_window to interact smoothly with apps and dialogs.
@@ -90,10 +91,18 @@ def bounded_result(result, limit=5000):
 
 def progress(evidence):
     rows = []
+    files = []
     for item in evidence:
         result = item['summary']
+        if isinstance(result, dict):
+            for match in result.get('matches', []):
+                path = match.get('path') if isinstance(match, dict) else match
+                if isinstance(path, str) and path not in files:
+                    files.append(path)
+            if result.get('created_image') and result['created_image'] not in files:
+                files.append(result['created_image'])
         rows.append({'tool': item['tool'], 'arguments': item['arguments'], 'outcome': item.get('outcome', 'unknown'), 'result': result})
-    return bounded_result({'prior_actions': rows if len(rows) <= 12 else rows[:4] + rows[-8:],
+    return bounded_result({'known_files': files[-8:], 'prior_actions': rows if len(rows) <= 12 else rows[:4] + rows[-8:],
                            'omitted_middle_actions': max(0, len(rows) - 12)}, 3500)
 
 
@@ -103,6 +112,8 @@ def outcome(result):
         return 'denied'
     if result.get('error') or result.get('errors') or result.get('ok') is False:
         return 'error'
+    if result.get('cached'):
+        return 'cached'
     if result.get('verified') is False:
         return 'unverified'
     return 'returned'
@@ -140,9 +151,55 @@ CORE_TOOLS = {
     'list_directory', 'read_text_file', 'search_files',
 }
 FILE_IMAGE_TOOLS = {
-    'inspect_images', 'resize_image', 'set_wallpaper', 'set_wallpaper_slideshow',
+    'inspect_images', 'resize_image', 'upscale_image', 'set_wallpaper', 'set_wallpaper_slideshow',
     'create_directory', 'copy_file', 'move_file', 'create_text_file',
 }
+
+# Only bounded, stable file lookups are reused. Telemetry, windows and screen state stay live.
+REUSABLE_READS = {'search_files', 'list_directory', 'read_text_file', 'inspect_images'}
+STATE_CHANGING_TOOLS = (WRITE_TOOLS - {'batch_actions'}) | {'click_element', 'activate_window', 'launch_application'}
+
+
+class ProgressGuard:
+    """Keep successful file lookups briefly; stop unchanged query/action loops."""
+    def __init__(self):
+        self.reads = {}
+        self.observations = {}
+        self.stalled = 0
+
+    def cached(self, name, arguments):
+        item = self.reads.get(action_key(name, arguments))
+        if name not in REUSABLE_READS or not item or time.monotonic() - item[0] > 15:
+            return None
+        # Metadata is on the envelope, so a cached inspection cannot masquerade as freshly verified.
+        return {'cached': True, 'verified': False, 'captured_at': item[1],
+                'cached_result': item[2], 'notice': 'Identical recent read reused. These paths remain available; choose the next task step. Refresh after a state change or cache expiry.'}
+
+    def observe(self, name, arguments, result):
+        if name == 'batch_actions' and result.get('steps'):
+            return  # Each inner step already updated the guard; the wrapper must not erase a stall.
+        key = action_key(name, arguments)
+        status = outcome(result)
+        if result.get('cached'):
+            self.stalled += 1
+            return
+        fingerprint = bounded_result(result, 8000)
+        same = self.observations.get(key) == fingerprint
+        if result.get('retry_blocked') or status == 'denied' or same:
+            self.stalled += 1
+        else:
+            self.stalled = 0
+        self.observations[key] = fingerprint
+        if name in STATE_CHANGING_TOOLS:
+            self.reads.clear()
+        elif name in REUSABLE_READS and status == 'returned':
+            self.reads[key] = (time.monotonic(), time.strftime('%Y-%m-%dT%H:%M:%S%z'), result)
+
+
+def unfinished_reply(text):
+    """Catch a short announcement of verification where a final result is needed."""
+    return bool(text and len(text) < 500 and re.match(
+        r'^\s*(?:I (?:need|will|must|should) to|Let me)\s+(?:verify|check|review|confirm|validate)\b', text, re.I))
 UI_APP_TOOLS = {
     'discover_applications', 'find_applications', 'launch_application',
     'activate_window', 'inspect_elements', 'inspect_screen_visual',

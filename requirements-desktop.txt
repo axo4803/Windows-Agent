@@ -1,0 +1,4 @@
+# Install requirements.txt first, then this optional native-window dependency.
+pywebview>=6,<7
+# Keep the WinForms bridge on the tested .NET Framework-compatible line.
+pythonnet>=3.0,<3.1; sys_platform == "win32"

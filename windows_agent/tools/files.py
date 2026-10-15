@@ -6,6 +6,8 @@ import warnings
 from pathlib import Path
 import shutil
 import time
+import subprocess
+import tempfile
 from PIL import Image, ImageFilter, ImageOps
 
 from .. import PROJECT_ROOT
@@ -19,6 +21,81 @@ SAFE_TEXT_EXTENSIONS = {
     '.ini', '.cfg', '.conf', '.xml', '.html', '.css', '.log', '.rst', '.sql'
 }
 SAFE_IMAGE_EXTENSIONS = {'.png', '.jpg', '.jpeg', '.webp', '.bmp'}
+
+UPSCALE_MODELS = {'digital-art': 'digital-art-4x', 'standard': 'upscayl-standard-4x',
+                  'high-fidelity': 'high-fidelity-4x'}
+
+
+def upscale_image(source, destination_path, check, scale=2, model='digital-art'):
+    """Run the installed neural engine, then publish a verified, new PNG."""
+    if type(scale) is not int or scale not in {2, 3, 4} or model not in UPSCALE_MODELS:
+        raise ValueError('Scale must be 2, 3 or 4; model must be digital-art, standard or high-fidelity')
+    check()
+    source = Path(source).expanduser().resolve(strict=True)
+    target = destination(destination_path)
+    if target.suffix.lower() != '.png' or target.exists() or target == source:
+        raise ValueError('Output must be a new PNG path; existing files cannot be overwritten')
+    if not source.is_file() or source.stat().st_size > 150_000_000:
+        raise ValueError('Source must be an image file up to 150 MB')
+    with warnings.catch_warnings():
+        warnings.simplefilter('error', Image.DecompressionBombWarning)
+        with Image.open(source) as original:
+            size, image_format = original.size, original.format
+            original.verify()
+    extension = {'JPEG': '.jpg', 'PNG': '.png', 'WEBP': '.webp'}.get(image_format)
+    if not extension or size[0] * size[1] * 16 > 80_000_000:
+        raise ValueError('Input must be JPEG (including JFIF), PNG or WEBP, up to 5 million pixels')
+    resources = Path(os.environ.get('ProgramFiles', r'C:\Program Files')) / 'Upscayl/resources'
+    executable = resources / 'bin/upscayl-bin.exe'
+    model_name = UPSCALE_MODELS[model]
+    if not executable.is_file() or not all((resources / 'models' / (model_name + ext)).is_file() for ext in ('.bin', '.param')):
+        raise FileNotFoundError('Installed Upscayl engine or selected model is missing')
+    check()
+    target.parent.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    with tempfile.TemporaryDirectory(prefix='.windows-agent-upscale-', dir=target.parent) as directory:
+        work = Path(directory)
+        prepared = work / ('input' + extension)
+        shutil.copyfile(source, prepared)  # JFIF is JPEG: preserve bytes and normalize only its extension.
+        output = work / 'result.png'
+        command = [str(executable), '-i', str(prepared), '-o', str(output), '-m', str(resources / 'models'),
+                   '-n', model_name, '-z', '4', '-s', str(scale), '-t', '128', '-f', 'png']
+        check()
+        with (work / 'engine.log').open('wb') as log:
+            process = subprocess.Popen(command, shell=False, stdout=log, stderr=subprocess.STDOUT,
+                                       creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
+            try:
+                while True:
+                    check()
+                    if time.monotonic() - started > 300:
+                        raise TimeoutError('Upscaling exceeded 300 seconds')
+                    try:
+                        code = process.wait(timeout=0.1)
+                        break
+                    except subprocess.TimeoutExpired:
+                        pass
+            finally:
+                if process.poll() is None:
+                    process.kill()
+                    process.wait(timeout=5)
+        if code:
+            with (work / 'engine.log').open('rb') as log:
+                log.seek(max(0, log.seek(0, 2) - 2000))
+                detail = log.read().decode('utf-8', errors='replace')
+            raise RuntimeError(f'Upscayl engine exited {code}: {detail}')
+        check()
+        expected = (size[0] * scale, size[1] * scale)
+        with Image.open(output) as image:
+            if image.format != 'PNG' or image.size != expected:
+                raise RuntimeError(f'Upscayl output dimensions {image.size} do not match {expected}')
+            image.verify()
+        # Exclusive creation also prevents a file appearing during inference from being overwritten.
+        with target.open('xb') as published, output.open('rb') as incoming:
+            shutil.copyfileobj(incoming, published)
+    return {'created_image': str(target), 'source': str(source), 'source_dimensions': list(size),
+            'width': expected[0], 'height': expected[1], 'scale': scale, 'model': model_name,
+            'engine': str(executable), 'source_retained': True, 'verified': True,
+            'elapsed_seconds': round(time.monotonic() - started, 2), 'method': 'Upscayl neural engine; native 4x model with requested output scale'}
 
 
 def destination(path):
@@ -60,6 +137,11 @@ def copy_file(source, destination_path, on_conflict='error'):
         target = target / source.name
     if source.suffix.lower() in EXECUTABLE_EXTENSIONS or target.suffix.lower() in EXECUTABLE_EXTENSIONS:
         raise ValueError('Copying executable/script/shortcut files is blocked')
+    image_formats = {'.jfif': 'JPEG', '.jpg': 'JPEG', '.jpeg': 'JPEG', '.png': 'PNG', '.webp': 'WEBP', '.bmp': 'BMP'}
+    if source.suffix.lower() in image_formats and target.suffix.lower() in image_formats:
+        with Image.open(source) as image:
+            if image.format != image_formats[target.suffix.lower()]:
+                raise ValueError('Copying does not convert image formats. For neural upscaling, pass the original source and a new PNG path directly to upscale_image; do not pre-create its output.')
     if not source.is_file() or source.stat().st_size > 250_000_000:
         raise ValueError('Source must be a file no larger than 250 MB')
     if on_conflict == 'rename':
@@ -174,7 +256,7 @@ SKIP_DIRS = {'.git', '.venv', 'venv', 'node_modules', '__pycache__', '$Recycle.B
 
 def inspect_images(path, check, recursive=False):
     target = Path(path).expanduser().resolve(strict=True)
-    extensions = {'.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif', '.tif', '.tiff'}
+    extensions = {'.png', '.jpg', '.jpeg', '.jfif', '.webp', '.bmp', '.gif', '.tif', '.tiff'}
     if not target.is_dir() and not target.is_file():
         raise ValueError('Path must be a local file or folder')
     candidates = []
